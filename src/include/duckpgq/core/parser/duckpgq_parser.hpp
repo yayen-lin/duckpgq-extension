@@ -3,6 +3,10 @@
 
 #include <duckpgq_state.hpp>
 
+// - The primary purpose of the duckpgq_parser.hpp header file and its associated structs
+//   and functions is to facilitate the parsing of property graph queries sent to DuckDB.
+// - The parsing functions translate graph queries into a format DuckDB understands,
+//   and the planning functions generate execution plans for those queries.
 namespace duckdb {
 
 struct CorePGQParser {

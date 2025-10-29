@@ -141,21 +141,27 @@ static void CheapestPathLengthFunction(DataChunk &args, ExpressionState &state, 
 	int64_t input_size = args.data[1].GetValue(0).GetValue<int64_t>();
 	auto duckpgq_state = GetDuckPGQState(info.context);
 
+	// 1. Get the CSR graph representation
 	CSR *csr = duckpgq_state->GetCSR(info.csr_id);
 	auto &src = args.data[2];
 
 	UnifiedVectorFormat vdata_src, vdata_target;
 	src.ToUnifiedFormat(args.size(), vdata_src);
 
+	// 2. Extract source and target nodes from the input
 	auto src_data = reinterpret_cast<int64_t *>(vdata_src.data);
-
 	auto &target = args.data[3];
+
 	target.ToUnifiedFormat(args.size(), vdata_target);
 	auto target_data = reinterpret_cast<int64_t *>(vdata_target.data);
+
+	// 3. Check if edges have weights
 	if (csr->w.empty()) {
+		// No weights → use doubles (probably defaults to 1.0)
 		TemplatedBellmanFord<double>(csr, args, input_size, result, vdata_src, src_data, vdata_target, target_data,
 		                             csr->w_double);
 	} else {
+		// Has weights → use int64_t weights
 		TemplatedBellmanFord<int64_t>(csr, args, input_size, result, vdata_src, src_data, vdata_target, target_data,
 		                              csr->w);
 	}

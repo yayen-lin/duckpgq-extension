@@ -11,11 +11,17 @@ class DuckPGQState : public ClientContextState {
 public:
 	explicit DuckPGQState() {};
 
+	// Likely used to set up any internal tables necessary for handling property graph data.
 	static void InitializeInternalTable(ClientContext &context);
+
+	// Overrides a method that might handle cleanup or finalization after a query executes.
 	void QueryEnd() override;
+
+	// Methods to retrieve property graph structures or Compressed Sparse Row (CSR) representations by ID.
 	CreatePropertyGraphInfo *GetPropertyGraph(const string &pg_name);
 	CSR *GetCSR(int32_t id);
 
+	// Manage property graph data processing.
 	void RetrievePropertyGraphs(const shared_ptr<Connection> &context);
 	void ProcessPropertyGraphs(unique_ptr<MaterializedQueryResult> &property_graphs, bool is_vertex);
 	void PopulateEdgeSpecificFields(unique_ptr<DataChunk> &chunk, idx_t row_idx, PropertyGraphTable &table);

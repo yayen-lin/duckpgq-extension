@@ -3,20 +3,35 @@
 
 namespace duckdb {
 
+// These are scalar functions (Lower-Level Helpers),
+// they typically process row-by-row or compute single values.
+// Many of these are building blocks for the table functions
 struct CoreScalarFunctions {
 	static void Register(ExtensionLoader &loader) {
-		RegisterCheapestPathLengthScalarFunction(loader);
-		RegisterCSRCreationScalarFunctions(loader);
-		RegisterCSRDeletionScalarFunction(loader);
-		RegisterGetCSRWTypeScalarFunction(loader);
-		RegisterIterativeLengthScalarFunction(loader);
+
+		// Compute path length
+		RegisterCheapestPathLengthScalarFunction(loader); // this 1
+
+		// Iterative path computation
+		RegisterIterativeLengthScalarFunction(loader); // this 3
 		RegisterIterativeLength2ScalarFunction(loader);
 		RegisterIterativeLengthBidirectionalScalarFunction(loader);
 		RegisterLocalClusteringCoefficientScalarFunction(loader);
-		RegisterReachabilityScalarFunction(loader);
-		RegisterShortestPathScalarFunction(loader);
-		RegisterWeaklyConnectedComponentScalarFunction(loader);
 		RegisterPageRankScalarFunction(loader);
+		RegisterWeaklyConnectedComponentScalarFunction(loader);
+
+		// Access CSR data structures
+		RegisterGetCSRWTypeScalarFunction(loader);
+
+		// Create CSR graph representation
+		RegisterCSRCreationScalarFunctions(loader);
+		RegisterCSRDeletionScalarFunction(loader);
+
+		// Check if nodes are reachable
+		RegisterReachabilityScalarFunction(loader); // this 4
+
+		// Find shortest path
+		RegisterShortestPathScalarFunction(loader); // this 2
 	}
 
 private:

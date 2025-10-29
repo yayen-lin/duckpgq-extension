@@ -4,6 +4,9 @@
 
 namespace duckdb {
 
+// likely responsible for binding a SQL statement related to property graph queries.
+// It will look at the SQL statement and possibly the provided context and binder to resolve types,
+// check for compatibility, and prepare for execution.
 BoundStatement duckpgq_bind(ClientContext &context, Binder &binder, OperatorExtensionInfo *info,
                             SQLStatement &statement);
 

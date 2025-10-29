@@ -29,13 +29,12 @@ public:
 		delete[] v;
 	}
 
-	atomic<int64_t> *v {};
-
-	vector<int64_t> e;
-	vector<int64_t> edge_ids;
-
-	vector<int64_t> w;
-	vector<double> w_double;
+	// For vertex i, edges are in e[v[i]] to e[v[i+1]-1]
+	atomic<int64_t> *v {};      // Vertex offsets (where each vertex's edges start)
+	vector<int64_t> e;          // Edge destinations (destination vertices)
+	vector<int64_t> edge_ids;   // Original edge IDs
+	vector<int64_t> w;          // Integer weights
+	vector<double> w_double;    // Double weights
 
 	bool initialized_v = false;
 	bool initialized_e = false;
@@ -46,6 +45,7 @@ public:
 	string ToString() const;
 };
 
+/****************** metadata/context that gets passed around when CSR-related functions are called ******************/
 struct CSRFunctionData : FunctionData {
 	CSRFunctionData(ClientContext &context, int32_t id, const LogicalType &weight_type);
 	unique_ptr<FunctionData> Copy() const override;
@@ -57,32 +57,61 @@ struct CSRFunctionData : FunctionData {
 	static unique_ptr<FunctionData> CSRBind(ClientContext &context, ScalarFunction &bound_function,
 	                                        vector<unique_ptr<Expression>> &arguments);
 
-	ClientContext &context;
-	const int32_t id;
-	const LogicalType weight_type;
+	ClientContext &context;         // Database connection context
+	const int32_t id;               // CSR id reference
+	const LogicalType weight_type;  // weights type
 };
 
-// CSR BindReplace functions
+/********************************************* CSR BindReplace functions *********************************************/
 unique_ptr<CommonTableExpressionInfo> CreateUndirectedCSRCTE(const shared_ptr<PropertyGraphTable> &edge_table,
                                                              const unique_ptr<SelectNode> &select_node);
-unique_ptr<CommonTableExpressionInfo> CreateDirectedCSRCTE(const shared_ptr<PropertyGraphTable> &edge_table,
-                                                           const string &prev_binding, const string &edge_binding,
-                                                           const string &next_binding);
 
-// Helper functions
+// Takes an edge table (with src, dst columns)
+// Returns a SQL CTE query
+// DuckDB executes that CTE, produces CSR arrays
+// CSR arrays stored in memory
+// BellmanFord reads from those arrays
+unique_ptr<CommonTableExpressionInfo> CreateDirectedCSRCTE(
+	const shared_ptr<PropertyGraphTable> &edge_table,
+	const string &prev_binding,  // src
+	const string &edge_binding,  // edge
+	const string &next_binding); // dst
+
+/************************************************* Helper functions *************************************************/
+// Create the edge array
 unique_ptr<CommonTableExpressionInfo> MakeEdgesCTE(const shared_ptr<PropertyGraphTable> &edge_table);
-unique_ptr<SubqueryExpression> CreateDirectedCSRVertexSubquery(const shared_ptr<PropertyGraphTable> &edge_table,
-                                                               const string &binding);
-unique_ptr<SubqueryExpression> CreateUndirectedCSRVertexSubquery(const shared_ptr<PropertyGraphTable> &edge_table,
-                                                                 const string &binding);
+
+// Create the vertex offset array
+unique_ptr<SubqueryExpression> CreateDirectedCSRVertexSubquery(
+	const shared_ptr<PropertyGraphTable> &edge_table,
+	const string &binding);
+
+unique_ptr<SubqueryExpression> CreateUndirectedCSRVertexSubquery(
+	const shared_ptr<PropertyGraphTable> &edge_table,
+	const string &binding);
+
 unique_ptr<SelectNode> CreateOuterSelectEdgesNode();
+
 unique_ptr<SelectNode> CreateOuterSelectNode(unique_ptr<FunctionExpression> create_csr_edge_function);
-unique_ptr<JoinRef> GetJoinRef(const shared_ptr<PropertyGraphTable> &edge_table, const string &edge_binding,
-                               const string &prev_binding, const string &next_binding);
-unique_ptr<SubqueryExpression> GetCountTable(const shared_ptr<PropertyGraphTable> &table, const string &table_alias,
-                                             const string &primary_key);
-void SetupSelectNode(unique_ptr<SelectNode> &select_node, const shared_ptr<PropertyGraphTable> &edge_table,
-                     bool reverse = false);
+
+// Set up joins and groupings
+unique_ptr<JoinRef> GetJoinRef(
+	const shared_ptr<PropertyGraphTable> &edge_table,
+	const string &edge_binding,
+	const string &prev_binding,
+	const string &next_binding);
+
+unique_ptr<SubqueryExpression> GetCountTable(
+	const shared_ptr<PropertyGraphTable> &table,
+	const string &table_alias,
+	const string &primary_key);
+
+// Set up joins and groupings
+void SetupSelectNode(
+	unique_ptr<SelectNode> &select_node,
+	const shared_ptr<PropertyGraphTable> &edge_table,
+	bool reverse = false);
+
 unique_ptr<SubqueryRef> CreateCountCTESubquery();
 unique_ptr<SubqueryExpression> GetCountUndirectedEdgeTable();
 unique_ptr<SubqueryExpression> GetCountEdgeTable(const shared_ptr<PropertyGraphTable> &edge_table);

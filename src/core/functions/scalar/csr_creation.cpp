@@ -40,6 +40,7 @@ static void CsrInitializeVertex(DuckPGQState &context, int32_t id, int64_t v_siz
 	}
 }
 
+// memory allocation
 static void CsrInitializeEdge(DuckPGQState &context, int32_t id, int64_t v_size, int64_t e_size) {
 	const lock_guard<mutex> csr_init_lock(context.csr_lock);
 
@@ -48,13 +49,19 @@ static void CsrInitializeEdge(DuckPGQState &context, int32_t id, int64_t v_size,
 		return;
 	}
 	try {
-		csr_entry->second->e.resize(e_size, 0);
-		csr_entry->second->edge_ids.resize(e_size, 0);
+		// Allocate edge arrays
+		csr_entry->second->e.resize(e_size, 0);         // Destination vertices
+		csr_entry->second->edge_ids.resize(e_size, 0);  // Original edge IDs
 	} catch (std::bad_alloc const &) {
 		throw Exception(ExceptionType::INTERNAL, "Unable to initialize vector of size for csr edge table "
 		                                         "representation");
 	}
+	// CRITICAL: Build prefix sum for v[] array, highly parallelizable on GPU
 	for (auto i = 1; i < v_size + 2; i++) {
+		// converts vertex degree counts into offsets (prefix sum)
+		// e.g.
+		// Before:  v = [0, 2, 1, 3]  (vertex degrees)
+		// After:   v = [0, 2, 3, 6]  (offsets into edge array)
 		csr_entry->second->v[i] += csr_entry->second->v[i - 1];
 	}
 	csr_entry->second->initialized_e = true;
@@ -109,12 +116,14 @@ static void CreateCsrVertexFunction(DataChunk &args, ExpressionState &state, Vec
 	                                                   });
 }
 
+// core CSR builder, populate edges
 static void CreateCsrEdgeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &info = func_expr.bind_info->Cast<CSRFunctionData>();
 
 	auto duckpgq_state = GetDuckPGQState(info.context, true);
 
+	// Get parameters
 	int64_t vertex_size = args.data[1].GetValue(0).GetValue<int64_t>();
 	int64_t edge_size = args.data[2].GetValue(0).GetValue<int64_t>();
 	int64_t edge_size_count = args.data[3].GetValue(0).GetValue<int64_t>();
@@ -124,6 +133,7 @@ static void CreateCsrEdgeFunction(DataChunk &args, ExpressionState &state, Vecto
 		                          "vertices referred by edge tables exist and are unique for path-finding queries.");
 	}
 
+	// Initialize
 	auto csr_entry = duckpgq_state->csr_list.find(info.id);
 	if (!csr_entry->second->initialized_e) {
 		CsrInitializeEdge(*duckpgq_state, info.id, vertex_size, edge_size);
@@ -145,22 +155,52 @@ static void CreateCsrEdgeFunction(DataChunk &args, ExpressionState &state, Vecto
 	}
 	if (weight_type == PhysicalType::INT64) {
 		QuaternaryExecutor::Execute<int64_t, int64_t, int64_t, int64_t, int32_t>(
-		    args.data[4], args.data[5], args.data[6], args.data[7], result, args.size(),
+		    args.data[4],   // src
+		    args.data[5],   // dst
+		    args.data[6],   // edge id
+		    args.data[7],   // weight
+		    result, args.size(),
 		    [&](int64_t src, int64_t dst, int64_t edge_id, int64_t weight) {
-			    auto pos = ++csr_entry->second->v[src + 1];
-			    csr_entry->second->e[(int64_t)pos - 1] = dst;
+		    	// CRITICIAL:
+			    auto pos = ++csr_entry->second->v[src + 1];       // Atomic increment
+			    csr_entry->second->e[(int64_t)pos - 1] = dst;             // Store destination
 			    csr_entry->second->edge_ids[(int64_t)pos - 1] = edge_id;
-			    csr_entry->second->w[(int64_t)pos - 1] = weight;
+			    csr_entry->second->w[(int64_t)pos - 1] = weight;          // Store weight
 			    return weight;
 		    });
 		return;
 	}
 
 	QuaternaryExecutor::Execute<int64_t, int64_t, int64_t, double_t, int32_t>(
-	    args.data[4], args.data[5], args.data[6], args.data[7], result, args.size(),
+	    args.data[4],   // src
+	    args.data[5],   // dst
+	    args.data[6],   // edge id
+	    args.data[7],   // weight
+	    result, args.size(),
 	    [&](int64_t src, int64_t dst, int64_t edge_id, double_t weight) {
-		    auto pos = ++csr_entry->second->v[src + 1];
-		    csr_entry->second->e[(int64_t)pos - 1] = dst;
+	    	// v[src + 1] to track where to insert the next edge for vertex src
+	    	// e.g.
+	    	// Input edges: (1→2), (1→3), (2→3)
+	    	// After initialization:
+	    	// v = [0, 0, 2, 3]  // Vertex 1 has space for 2 edges at positions 0-1
+	    	//
+	    	// Process (1→2):
+	    	//   pos = ++v[2] = 1
+	    	//   e[0] = 2
+	    	//
+	    	// Process (1→3):
+	    	//   pos = ++v[2] = 2
+	    	//   e[1] = 3
+	    	//
+	    	// Process (2→3):
+	    	//   pos = ++v[3] = 3
+	    	//   e[2] = 3
+	    	//
+	    	// Final:
+	    	// v = [0, 0, 2, 3]
+	    	// e = [2, 3, 3]
+		    auto pos = ++csr_entry->second->v[src + 1];        // Get next position for src vertex
+		    csr_entry->second->e[(int64_t)pos - 1] = dst;              // Write destination
 		    csr_entry->second->edge_ids[(int64_t)pos - 1] = edge_id;
 		    csr_entry->second->w_double[(int64_t)pos - 1] = weight;
 		    return weight;
@@ -189,17 +229,17 @@ ScalarFunctionSet GetCSREdgeFunction() {
 	 * 7. <optional> edge weight (INT OR DOUBLE)
 	 */
 
-	//! No edge weight
+	//! No edge weight (no weight)
 	set.AddFunction(ScalarFunction({LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT,
 	                                LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT},
 	                               LogicalType::INTEGER, CreateCsrEdgeFunction, CSRFunctionData::CSREdgeBind));
 
-	//! Integer for edge weight
+	//! Integer for edge weight (integer weight)
 	set.AddFunction(ScalarFunction({LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT,
 	                                LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT},
 	                               LogicalType::INTEGER, CreateCsrEdgeFunction, CSRFunctionData::CSREdgeBind));
 
-	//! Double for edge weight
+	//! Double for edge weight (double weight)
 	set.AddFunction(ScalarFunction({LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT,
 	                                LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::DOUBLE},
 	                               LogicalType::INTEGER, CreateCsrEdgeFunction, CSRFunctionData::CSREdgeBind));

@@ -541,8 +541,23 @@ unique_ptr<SubqueryExpression> GetCountEdgeTable(const shared_ptr<PropertyGraphT
 }
 
 // Function to create the CTE for the Directed CSR
+// WITH csr_cte AS (
+//    SELECT create_csr_edge(
+//        0,                    -- CSR ID
+//        (SELECT COUNT(*) ...), -- vertex count
+//        (SELECT ...),          -- vertex offsets
+//        (SELECT COUNT(*) ...), -- edge count
+//        src.rowid,
+//        dst.rowid,
+//        edge.rowid
+//    )
+//    FROM edge_table
+//    JOIN src_table
+//    JOIN dst_table
+// )
 unique_ptr<CommonTableExpressionInfo> CreateDirectedCSRCTE(const shared_ptr<PropertyGraphTable> &edge_table,
-                                                           const string &prev_binding, const string &edge_binding,
+                                                           const string &prev_binding,
+                                                           const string &edge_binding,
                                                            const string &next_binding) {
 	auto csr_edge_id_constant = make_uniq<ConstantExpression>(Value::INTEGER(0));
 	auto count_create_edge_select = GetCountTable(edge_table->source_pg_table, prev_binding, edge_table->source_pk[0]);
@@ -556,26 +571,33 @@ unique_ptr<CommonTableExpressionInfo> CreateDirectedCSRCTE(const shared_ptr<Prop
 
 	auto cast_expression = make_uniq<CastExpression>(LogicalType::BIGINT, std::move(cast_subquery_expr));
 
+	// 1. Gather all the inputs needed for CSR construction
 	vector<unique_ptr<ParsedExpression>> csr_edge_children;
-	csr_edge_children.push_back(std::move(csr_edge_id_constant));
-	csr_edge_children.push_back(std::move(count_create_edge_select));
-	csr_edge_children.push_back(std::move(cast_expression));
-	csr_edge_children.push_back(std::move(count_edge_table));
-	csr_edge_children.push_back(std::move(src_rowid_colref));
-	csr_edge_children.push_back(std::move(dst_rowid_colref));
-	csr_edge_children.push_back(std::move(edge_rowid_colref));
+	csr_edge_children.push_back(std::move(csr_edge_id_constant));     // CSR ID (0)
+	csr_edge_children.push_back(std::move(count_create_edge_select)); // # of vertices
+	csr_edge_children.push_back(std::move(cast_expression));          // Vertex offsets (v array)
+	csr_edge_children.push_back(std::move(count_edge_table));         // # of edges
+	csr_edge_children.push_back(std::move(src_rowid_colref));         // Source vertices
+	csr_edge_children.push_back(std::move(dst_rowid_colref));         // Destination vertices
+	csr_edge_children.push_back(std::move(edge_rowid_colref));        // Edge IDs
 
+	// Wrap inputs into a function call: create_csr_edge(...)
 	auto create_csr_edge_function = make_uniq<FunctionExpression>("create_csr_edge", std::move(csr_edge_children));
-	auto outer_select_node = CreateOuterSelectNode(std::move(create_csr_edge_function));
 
+	// Put it in a SELECT statement:
+	// SELECT create_csr_edge(...) FROM edge_table JOIN ...
+	auto outer_select_node = CreateOuterSelectNode(std::move(create_csr_edge_function));
+	// The FROM clause with JOINs
 	outer_select_node->from_table = GetJoinRef(edge_table, edge_binding, prev_binding, next_binding);
 
+	// DuckDB executes the statement
 	auto outer_select_statement = make_uniq<SelectStatement>();
 	outer_select_statement->node = std::move(outer_select_node);
 
+	// Package it as a CTE
 	auto info = make_uniq<CommonTableExpressionInfo>();
 	info->query = std::move(outer_select_statement);
-	return info;
+	return info; // This becomes: WITH csr_cte AS (SELECT create_csr_edge(...))
 }
 
 // Function to create a subquery for counting with CTE

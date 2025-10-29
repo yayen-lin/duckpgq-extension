@@ -26,6 +26,7 @@ static int16_t InitialiseBellmanFord(const DataChunk &args, int64_t input_size, 
 	return lanes;
 }
 
+// compare and update shortest distance
 template <typename T>
 int64_t UpdateOneLane(T &n_dist, T v_dist, T weight) {
 	T new_dist = v_dist + weight;
@@ -58,13 +59,14 @@ int16_t TemplatedBatchBellmanFord(CSR *csr, DataChunk &args, int64_t input_size,
 	int16_t curr_batch_size =
 	    InitialiseBellmanFord<T, lane_limit>(args, input_size, vdata_src, src_data, result_size, dists);
 	bool changed = true;
+	// outer convergence loop
 	while (changed) {
 		changed = false;
-		//! For every v in the input
+		//! For every v in the input (for each vertex)
 		for (int64_t v = 0; v < input_size; v++) {
-			//! Loop through all the n neighbours of v
+			//! Loop through all the n neighbours of v (for each edge)
 			for (auto index = (int64_t)csr->v[v]; index < (int64_t)csr->v[v + 1]; index++) {
-				//! Get weight of (v,n)
+				//! Get weight of (v,n) (update distance if there is a shorter path)
 				changed = UpdateLanes<T>(dists, v, csr->e[index], weight_array[index]) | changed;
 			}
 		}
@@ -88,6 +90,7 @@ int16_t TemplatedBatchBellmanFord(CSR *csr, DataChunk &args, int64_t input_size,
 	return curr_batch_size;
 }
 
+// its trying to do SIMD-style processing on CPU, which happens naturally on GPUs
 template <typename T>
 void TemplatedBellmanFord(CSR *csr, DataChunk &args, int64_t input_size, Vector &result, UnifiedVectorFormat &vdata_src,
                           int64_t *src_data, const UnifiedVectorFormat &vdata_target, int64_t *target_data,

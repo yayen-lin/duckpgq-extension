@@ -8,6 +8,7 @@
 
 namespace duckdb {
 
+// Core BFS loop
 static bool IterativeLength(int64_t v_size, int64_t *V, vector<int64_t> &E, vector<int64_t> &edge_ids,
                             vector<std::vector<int64_t>> &parents_v, vector<std::vector<int64_t>> &parents_e,
                             vector<std::bitset<LANE_LIMIT>> &seen, vector<std::bitset<LANE_LIMIT>> &visit,
@@ -18,11 +19,15 @@ static bool IterativeLength(int64_t v_size, int64_t *V, vector<int64_t> &E, vect
 	}
 	//! Keep track of edge id through which the node was reached
 	for (auto v = 0; v < v_size; v++) {
+		// If any search is visiting vertex v
 		if (visit[v].any()) {
+			// Explore all neighbors
 			for (auto e = V[v]; e < V[v + 1]; e++) {
-				auto n = E[e];
+				auto n = E[e];  // Neighbor
 				auto edge_id = edge_ids[e];
-				next[n] = next[n] | visit[v];
+				next[n] = next[n] | visit[v]; // Mark neighbor for next iteration
+
+				// Track parent for path reconstruction
 				for (auto l = 0; l < LANE_LIMIT; l++) {
 					parents_v[n][l] = ((parents_v[n][l] == -1) && visit[v][l]) ? v : parents_v[n][l];
 					parents_e[n][l] = ((parents_e[n][l] == -1) && visit[v][l]) ? edge_id : parents_e[n][l];
@@ -31,6 +36,7 @@ static bool IterativeLength(int64_t v_size, int64_t *V, vector<int64_t> &E, vect
 		}
 	}
 
+	// ... mark visited, check for changes
 	for (auto v = 0; v < v_size; v++) {
 		next[v] = next[v] & ~seen[v];
 		seen[v] = seen[v] | next[v];
@@ -75,11 +81,11 @@ static void ShortestPathFunction(DataChunk &args, ExpressionState &state, Vector
 	ValidityMask &result_validity = FlatVector::Validity(result);
 
 	// create temp SIMD arrays
-	vector<std::bitset<LANE_LIMIT>> seen(v_size);
-	vector<std::bitset<LANE_LIMIT>> visit1(v_size);
-	vector<std::bitset<LANE_LIMIT>> visit2(v_size);
-	vector<std::vector<int64_t>> parents_v(v_size, std::vector<int64_t>(LANE_LIMIT, -1));
-	vector<std::vector<int64_t>> parents_e(v_size, std::vector<int64_t>(LANE_LIMIT, -1));
+	vector<std::bitset<LANE_LIMIT>> seen(v_size);      // Already visited nodes
+	vector<std::bitset<LANE_LIMIT>> visit1(v_size);    // Current frontier
+	vector<std::bitset<LANE_LIMIT>> visit2(v_size);    // Next frontier
+	vector<std::vector<int64_t>> parents_v(v_size, std::vector<int64_t>(LANE_LIMIT, -1)); // Parent vertex
+	vector<std::vector<int64_t>> parents_e(v_size, std::vector<int64_t>(LANE_LIMIT, -1)); // Parent edge
 
 	// maps lane to search number
 	int64_t lane_to_num[LANE_LIMIT];
@@ -168,6 +174,7 @@ static void ShortestPathFunction(DataChunk &args, ExpressionState &state, Vector
 			std::vector<int64_t> output_edge;
 			auto source_v = src_data[src_pos]; // Take the source
 
+			// Start from destination, work backwards to source
 			auto parent_vertex = parents_v[dst_data[dst_pos]][lane]; // Take the parent vertex of the destination vertex
 			auto parent_edge = parents_e[dst_data[dst_pos]][lane];   // Take the parent edge of the destination vertex
 
@@ -191,6 +198,8 @@ static void ShortestPathFunction(DataChunk &args, ExpressionState &state, Vector
 			}
 			output_vector.push_back(source_v);
 			std::reverse(output_vector.begin(), output_vector.end());
+
+			// Returns a list of interleaved vertices and edges
 			auto output = make_uniq<Vector>(LogicalType::LIST(LogicalType::BIGINT));
 			for (auto val : output_vector) {
 				Value value_to_insert = val;

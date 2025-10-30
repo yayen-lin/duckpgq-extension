@@ -12,10 +12,12 @@ struct CoreScalarFunctions {
 		// Compute path length
 		RegisterCheapestPathLengthScalarFunction(loader); // this 1
 
-		// Iterative path computation
+		// Helper functions, iterative path computation
 		RegisterIterativeLengthScalarFunction(loader); // this 3
 		RegisterIterativeLength2ScalarFunction(loader);
 		RegisterIterativeLengthBidirectionalScalarFunction(loader);
+
+		// Graph algorithm
 		RegisterLocalClusteringCoefficientScalarFunction(loader);
 		RegisterPageRankScalarFunction(loader);
 		RegisterWeaklyConnectedComponentScalarFunction(loader);

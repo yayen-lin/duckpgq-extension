@@ -22,6 +22,25 @@
 
 namespace duckdb {
 
+///////////////////////////////////////////////////////////////////////////////////////////
+// MATCH is basically a query rewriter (ALL IN SQL)
+// Input: MATCH pattern (graph query language)
+// 		↓
+// Parse pattern into vertices and edges
+// 		↓
+// Look up which tables store those vertices/edges
+// 		↓
+// Generate SQL joins between those tables
+// 		↓
+// Add WHERE conditions
+// 		↓
+// Output: Standard SQL query
+// 		↓
+// DuckDB executes it
+///////////////////////////////////////////////////////////////////////////////////////////
+// 1. CROSS JOIN for Path-Finding
+// 2. CSR Construction as CTE
+// 3. Mixed Pattern Handling
 struct PGQMatchFunction : public TableFunction {
 public:
 	PGQMatchFunction() {
@@ -34,6 +53,7 @@ public:
 		bool done = false;
 	};
 
+	// Helper: find which table a label refers to
 	static shared_ptr<PropertyGraphTable> FindGraphTable(const string &label, CreatePropertyGraphInfo &pg_table);
 
 	static void CheckInheritance(const shared_ptr<PropertyGraphTable> &tableref, PathElement *element,
@@ -42,6 +62,7 @@ public:
 	static void CheckEdgeTableConstraints(const string &src_reference, const string &dst_reference,
 	                                      const shared_ptr<PropertyGraphTable> &edge_table);
 
+	// Helper: create join conditions between vertex and edge tables
 	static unique_ptr<ParsedExpression> CreateMatchJoinExpression(vector<string> vertex_keys, vector<string> edge_keys,
 	                                                              const string &vertex_alias, const string &edge_alias);
 
@@ -64,25 +85,33 @@ public:
 
 	static unique_ptr<SubqueryRef> CreateCountCTESubquery();
 
+	// Helper: build WHERE clause from conditions
 	static unique_ptr<ParsedExpression> CreateWhereClause(vector<unique_ptr<ParsedExpression>> &conditions);
 
+	/**************************************** 2.2 Handle different edge types ****************************************/
+	// Convert different edge patterns into appropriate joins
+	// (a)-[e]-(b)   no direction
 	static void EdgeTypeAny(const shared_ptr<PropertyGraphTable> &edge_table, const string &edge_binding,
 	                        const string &prev_binding, const string &next_binding,
 	                        vector<unique_ptr<ParsedExpression>> &conditions, unique_ptr<TableRef> &from_clause);
 
+	// (a)<-[e]-(b)  left arrow
 	static void EdgeTypeLeft(const shared_ptr<PropertyGraphTable> &edge_table, const string &next_table_name,
 	                         const string &prev_table_name, const string &edge_binding, const string &prev_binding,
 	                         const string &next_binding, vector<unique_ptr<ParsedExpression>> &conditions);
 
+	// (a)-[e]->(b)  right arrow
 	static void EdgeTypeRight(const shared_ptr<PropertyGraphTable> &edge_table, const string &next_table_name,
 	                          const string &prev_table_name, const string &edge_binding, const string &prev_binding,
 	                          const string &next_binding, vector<unique_ptr<ParsedExpression>> &conditions);
 
+	// (a)<-[e]->(b) bidirectional
 	static void EdgeTypeLeftRight(const shared_ptr<PropertyGraphTable> &edge_table, const string &edge_binding,
 	                              const string &prev_binding, const string &next_binding,
 	                              vector<unique_ptr<ParsedExpression>> &conditions,
 	                              case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
 	                              int32_t &extra_alias_counter);
+	/****************************************************** end ******************************************************/
 
 	static PathElement *HandleNestedSubPath(unique_ptr<PathReference> &path_reference,
 	                                        vector<unique_ptr<ParsedExpression>> &conditions, idx_t element_idx);
@@ -92,6 +121,13 @@ public:
 	                                                               const shared_ptr<PropertyGraphTable> &edge_table,
 	                                                               const SubPath *subpath);
 
+	/**** 1. Main entry point, takes a MATCH pattern and converts it into SQL joins/scans that DuckDB can execute. ****/
+	// MATCH (a:Person)-[k:Knows]->(b:Person)
+	//		↓
+	// SELECT ...
+	// FROM Person a
+	// JOIN Knows k ON a.id = k.src
+	// JOIN Person b ON k.dst = b.id
 	static unique_ptr<TableRef> MatchBindReplace(ClientContext &context, TableFunctionBindInput &input);
 
 	static unique_ptr<SubqueryRef> GenerateSubpathPatternSubquery(unique_ptr<PathPattern> &path_pattern,
@@ -99,17 +135,32 @@ public:
 	                                                              vector<unique_ptr<ParsedExpression>> &column_list,
 	                                                              unordered_set<string> &named_subpaths);
 
+	// 3.1. Path-Finding integration, generate CTE for shortest path queries
+	// Builds this SQL:
+	// WITH shortest_path_cte AS (
+	// 		SELECT shortestpath(0, vertex_count, src.rowid, dst.rowid) AS path,
+	// 		   src.rowid AS src_rowid,
+	// 		   dst.rowid AS dst_rowid
+	// 		FROM Person src
+	// 		CROSS JOIN Person dst
+	// 		WHERE <path conditions>
+	// )
+	// and generates all pairs (CROSS JOIN) and lets the shortest path function filter which pairs have valid paths
 	static unique_ptr<CommonTableExpressionInfo>
 	GenerateShortestPathCTE(CreatePropertyGraphInfo &pg_table, SubPath *edge_subpath, PathElement *path_element,
 	                        PathElement *next_vertex_element,
 	                        vector<unique_ptr<ParsedExpression>> &path_finding_conditions);
 
+	// constructs the list of vertex+edge IDs for the path result
+	// i.e. combines edge joins (simple patterns) & shortest path results (path-finding patterns) into one big list
 	static unique_ptr<ParsedExpression> CreatePathFindingFunction(vector<unique_ptr<PathReference>> &path_list,
 	                                                              CreatePropertyGraphInfo &pg_table,
 	                                                              const string &path_variable,
 	                                                              unique_ptr<SelectNode> &final_select_node,
 	                                                              vector<unique_ptr<ParsedExpression>> &conditions);
 
+	// 3.2. Add path-finding logic to the query,
+	//		and generate the shortest path logic and integrate it into the overall MATCH query
 	static void AddPathFinding(unique_ptr<SelectNode> &select_node, vector<unique_ptr<ParsedExpression>> &conditions,
 	                           const string &prev_binding, const string &edge_binding, const string &next_binding,
 	                           const shared_ptr<PropertyGraphTable> &edge_table, CreatePropertyGraphInfo &pg_table,
@@ -123,6 +174,17 @@ public:
 	                         case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
 	                         int32_t &extra_alias_counter, unique_ptr<TableRef> &from_clause);
 
+	/* 2.1. Pattern processor, process the entire path pattern */
+	//  // For each edge in the pattern
+	//	for (idx_j = 1; idx_j < path_list.size(); idx_j = idx_j + 2) {
+	//		if (edge_subpath->upper > 1) {
+	//			// Path-finding pattern: (a)-[e]->+(b)
+	//			AddPathFinding(...);
+	//		} else {
+	//			// Simple edge: (a)-[e]->(b)
+	//			AddEdgeJoins(...);
+	//		}
+	//	}
 	static void ProcessPathList(vector<unique_ptr<PathReference>> &path_pattern,
 	                            vector<unique_ptr<ParsedExpression>> &conditions, unique_ptr<SelectNode> &select_node,
 	                            case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
